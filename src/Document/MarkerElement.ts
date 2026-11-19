@@ -40,6 +40,11 @@ export class MarkerElement extends Element {
       'viewBox',
       this.getAttribute('viewBox').getValue()
     ))
+    markerSvg.attributes.set('preserveAspectRatio', new Property(
+      this.document,
+      'preserveAspectRatio',
+      this.getAttribute('preserveAspectRatio').getValue()
+    ))
     markerSvg.attributes.set('refX', new Property(
       this.document,
       'refX',

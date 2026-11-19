@@ -93,6 +93,34 @@ const defaultWindow = typeof window !== 'undefined'
 const defaultFetch = typeof fetch !== 'undefined'
   ? fetch.bind(undefined) // `fetch` depends on context: `someObject.fetch(...)` will throw error.
   : undefined
+// http://www.w3.org/TR/SVG/coords.html#PreserveAspectRatioAttribute
+const aspectRatioAligns = [
+  'none',
+  'xMinYMin',
+  'xMinYMid',
+  'xMinYMax',
+  'xMidYMin',
+  'xMidYMid',
+  'xMidYMax',
+  'xMaxYMin',
+  'xMaxYMid',
+  'xMaxYMax'
+]
+const aspectRatioMeetOrSlices = ['meet', 'slice']
+
+function parseAspectRatio(aspectRatio: string): [string, string] {
+  const cleanAspectRatio = compressSpaces(aspectRatio).replace(/^defer\s/, '') // ignore defer
+  const [aspectRatioAlign, aspectRatioMeetOrSlice] = cleanAspectRatio.split(' ')
+  // invalid values (including wrong case) fall back to the default
+  const align = aspectRatioAligns.includes(aspectRatioAlign)
+    ? aspectRatioAlign
+    : 'xMidYMid'
+  const meetOrSlice = aspectRatioMeetOrSlices.includes(aspectRatioMeetOrSlice)
+    ? aspectRatioMeetOrSlice
+    : 'meet'
+
+  return [align, meetOrSlice]
+}
 
 export class Screen {
   static readonly defaultWindow = defaultWindow
@@ -187,10 +215,7 @@ export class Screen {
     clipY = 0
   }: IScreenViewBoxConfig) {
     // aspect ratio - http://www.w3.org/TR/SVG/coords.html#PreserveAspectRatioAttribute
-    const cleanAspectRatio = compressSpaces(aspectRatio).replace(/^defer\s/, '') // ignore defer
-    const [aspectRatioAlign, aspectRatioMeetOrSlice] = cleanAspectRatio.split(' ')
-    const align = aspectRatioAlign || 'xMidYMid'
-    const meetOrSlice = aspectRatioMeetOrSlice || 'meet'
+    const [align, meetOrSlice] = parseAspectRatio(aspectRatio)
     // calculate scale
     const scaleX = width / desiredWidth
     const scaleY = height / desiredHeight
@@ -213,13 +238,6 @@ export class Screen {
     const refYProp = new Property(document, 'refY', refY)
     const hasRefs = refXProp.hasValue() && refYProp.hasValue()
 
-    if (hasRefs) {
-      ctx.translate(
-        -scaleMin * refXProp.getPixels('x'),
-        -scaleMin * refYProp.getPixels('y')
-      )
-    }
-
     if (clip) {
       const scaledClipX = scaleMin * clipX
       const scaledClipY = scaleMin * clipY
@@ -233,35 +251,42 @@ export class Screen {
       ctx.clip()
     }
 
-    if (!hasRefs) {
-      const isMeetMinY = meetOrSlice === 'meet' && scaleMin === scaleY
-      const isSliceMaxY = meetOrSlice === 'slice' && scaleMax === scaleY
-      const isMeetMinX = meetOrSlice === 'meet' && scaleMin === scaleX
-      const isSliceMaxX = meetOrSlice === 'slice' && scaleMax === scaleX
+    // align the viewBox within the viewport
+    const isMeetMinY = meetOrSlice === 'meet' && scaleMin === scaleY
+    const isSliceMaxY = meetOrSlice === 'slice' && scaleMax === scaleY
+    const isMeetMinX = meetOrSlice === 'meet' && scaleMin === scaleX
+    const isSliceMaxX = meetOrSlice === 'slice' && scaleMax === scaleX
 
-      if (align.startsWith('xMid') && (
-        isMeetMinY || isSliceMaxY
-      )) {
-        ctx.translate(width / 2.0 - finalDesiredWidth / 2.0, 0)
-      }
+    if (align.startsWith('xMid') && (
+      isMeetMinY || isSliceMaxY
+    )) {
+      ctx.translate(width / 2.0 - finalDesiredWidth / 2.0, 0)
+    }
 
-      if (align.endsWith('YMid') && (
-        isMeetMinX || isSliceMaxX
-      )) {
-        ctx.translate(0, height / 2.0 - finalDesiredHeight / 2.0)
-      }
+    if (align.endsWith('YMid') && (
+      isMeetMinX || isSliceMaxX
+    )) {
+      ctx.translate(0, height / 2.0 - finalDesiredHeight / 2.0)
+    }
 
-      if (align.startsWith('xMax') && (
-        isMeetMinY || isSliceMaxY
-      )) {
-        ctx.translate(width - finalDesiredWidth, 0)
-      }
+    if (align.startsWith('xMax') && (
+      isMeetMinY || isSliceMaxY
+    )) {
+      ctx.translate(width - finalDesiredWidth, 0)
+    }
 
-      if (align.endsWith('YMax') && (
-        isMeetMinX || isSliceMaxX
-      )) {
-        ctx.translate(0, height - finalDesiredHeight)
-      }
+    if (align.endsWith('YMax') && (
+      isMeetMinX || isSliceMaxX
+    )) {
+      ctx.translate(0, height - finalDesiredHeight)
+    }
+
+    // refX/refY shift the content after the aspect ratio adaptation
+    if (hasRefs) {
+      ctx.translate(
+        -scaleMin * refXProp.getPixels('x'),
+        -scaleMin * refYProp.getPixels('y')
+      )
     }
 
     // scale
