@@ -9,7 +9,9 @@ const pseudoClassRegex = /(:[^\s+>~.[:]+)/g
 const elementRegex = /([^\s+>~.[:]+)/g
 
 function findSelectorMatch(selector: string, regex: RegExp): [string, number] {
-  const matches = regex.exec(selector)
+  // `RegExp.exec` returns at most one match (and `matches.length` counts groups,
+  // not occurrences), so occurrences have to be counted via `String.match`
+  const matches = selector.match(regex)
 
   if (!matches) {
     return [selector, 0]
@@ -19,17 +21,23 @@ function findSelectorMatch(selector: string, regex: RegExp): [string, number] {
 }
 
 /**
- * Measure selector specificity.
- * @param selector - Selector to measure.
- * @returns Specificity.
+ * Selector specificity split into id, class and element counts.
  */
-export function getSelectorSpecificity(selector: string) {
-  const specificity = [
+export type Specificity = [number, number, number]
+
+/**
+ * Measure selector specificity as id, class and element counts.
+ * @param selector - Selector to measure.
+ * @returns Specificity parts.
+ */
+export function getSelectorSpecificityParts(selector: string): Specificity {
+  const specificity: Specificity = [
     0,
     0,
     0
   ]
   let currentSelector = selector
+    // `:not()` has no specificity of its own, only its argument does
     .replace(/:not\(([^)]*)\)/g, '     $1 ')
     .replace(/{[\s\S]*/gm, ' ')
   let delta = 0;
@@ -59,5 +67,50 @@ export function getSelectorSpecificity(selector: string) {
   [currentSelector, delta] = findSelectorMatch(currentSelector, elementRegex) // lgtm [js/useless-assignment-to-local]
   specificity[2] += delta
 
-  return specificity.join('')
+  return specificity
 }
+
+/**
+ * Measure selector specificity.
+ * @param selector - Selector to measure.
+ * @returns Specificity.
+ */
+export function getSelectorSpecificity(selector: string) {
+  return getSelectorSpecificityParts(selector).join('')
+}
+
+const SPECIFICITY_PART_WIDTH = 6
+
+/**
+ * Convert specificity parts into a fixed-width string so that plain string
+ * comparison yields the same result as comparing the id, class and element
+ * counts numerically.
+ * @param specificity - Specificity parts.
+ * @returns Comparable specificity weight.
+ */
+export function toSpecificityWeight(specificity: Specificity) {
+  return specificity
+    .map(part => String(part).padStart(SPECIFICITY_PART_WIDTH, '0'))
+    .join('')
+}
+
+/**
+ * Cascade tier of regular style sheet rules.
+ */
+export const RULE_SPECIFICITY_TIER = '1'
+
+/**
+ * Cascade tier of `!important` style sheet rules.
+ */
+export const IMPORTANT_RULE_SPECIFICITY_TIER = '3'
+
+/**
+ * Specificity weight of inline styles, which always win over regular
+ * style sheet rules.
+ */
+export const INLINE_STYLES_SPECIFICITY_WEIGHT = `2${'9'.repeat(SPECIFICITY_PART_WIDTH * 3)}`
+
+/**
+ * Specificity weight of `!important` inline styles, which win over everything.
+ */
+export const INLINE_IMPORTANT_STYLES_SPECIFICITY_WEIGHT = `4${'9'.repeat(SPECIFICITY_PART_WIDTH * 3)}`

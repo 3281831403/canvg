@@ -1,13 +1,14 @@
-import {
-  compressSpaces,
-  getSelectorSpecificity,
-  parseExternalUrl
-} from '../util'
-import { Property } from '../Property'
-import { SVGFontLoader } from '../SVGFontLoader'
+import { parseExternalUrl } from '../util'
 import { Document } from './Document'
 import { Element } from './Element'
 
+/**
+ * `<style>` element.
+ *
+ * Style sheets are collected and parsed by the document before any element is
+ * created (see `Document.parseStyleSheets`), so the position of the `<style>`
+ * element within the SVG doesn't matter.
+ */
 export class StyleElement extends Element {
   static readonly parseExternalUrl = parseExternalUrl
 
@@ -20,64 +21,8 @@ export class StyleElement extends Element {
   ) {
     super(document, node, captureTextNodes)
 
-    const css = compressSpaces(
-      Array.from(node.childNodes)
-      // NEED TEST
-        .map(_ => _.textContent)
-        .join('')
-        .replace(/(\/\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+\/)|(^[\s]*\/\/.*)/gm, '') // remove comments
-        .replace(/@import.*;/g, '') // remove imports
-    )
-    const cssDefs = css.split('}')
-
-    cssDefs.forEach((_) => {
-      const def = _.trim()
-
-      if (!def) {
-        return
-      }
-
-      const cssParts = def.split('{')
-      const cssClasses = cssParts[0].split(',')
-      const cssProps = cssParts[1].split(';')
-
-      cssClasses.forEach((_) => {
-        const cssClass = _.trim()
-
-        if (!cssClass) {
-          return
-        }
-
-        const props = document.styles.get(cssClass) || new Map<string, Property>()
-
-        cssProps.forEach((cssProp) => {
-          const prop = cssProp.indexOf(':')
-          const name = cssProp.substr(0, prop).trim()
-          const value = cssProp.substr(prop + 1, cssProp.length - prop).trim()
-
-          if (name && value) {
-            props.set(name, new Property(document, name, value))
-          }
-        })
-
-        document.styles.set(cssClass, props)
-        document.stylesSpecificity.set(cssClass, getSelectorSpecificity(cssClass))
-
-        if (cssClass === '@font-face') { //  && !nodeEnv
-          const fontFamily = props.get('font-family').getString().replace(/"|'/g, '')
-          const srcs = props.get('src').getString().split(',')
-
-          srcs.forEach((src) => {
-            if (src.indexOf('format("svg")') > 0) {
-              const url = parseExternalUrl(src)
-
-              if (url) {
-                void new SVGFontLoader(document).load(fontFamily, url)
-              }
-            }
-          })
-        }
-      })
-    })
+    // style sheets are normally parsed in advance by the document; this is a
+    // safety net for elements created outside `Document.createDocumentElement`
+    document.parseStyleSheets(node.ownerDocument)
   }
 }

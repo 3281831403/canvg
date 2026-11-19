@@ -1,5 +1,12 @@
 import { RenderingContext2D } from '../types'
-import { normalizeAttributeName } from '../util'
+import {
+  IMPORTANT_RULE_SPECIFICITY_TIER,
+  INLINE_IMPORTANT_STYLES_SPECIFICITY_WEIGHT,
+  INLINE_STYLES_SPECIFICITY_WEIGHT,
+  matchesSelector as matchesCssSelector,
+  normalizeAttributeName,
+  RULE_SPECIFICITY_TIER
+} from '../util'
 import { Property } from '../Property'
 import { Transform } from '../Transform'
 import { Document } from './Document'
@@ -52,7 +59,24 @@ export abstract class Element {
         const [name, value] = style.split(':').map(_ => _.trim())
 
         if (name) {
-          this.styles.set(name, new Property(document, name, value))
+          let important = false
+          let normalizedValue = value
+          const importantMatch = /!important\s*$/.exec(value)
+
+          if (importantMatch) {
+            important = true
+            normalizedValue = value.slice(0, value.length - importantMatch[0].length).trim()
+          }
+
+          this.styles.set(name, new Property(document, name, normalizedValue))
+          // inline styles always win over style sheet rules, so they get a
+          // weight no selector can reach
+          this.stylesSpecificity.set(
+            name,
+            important
+              ? INLINE_IMPORTANT_STYLES_SPECIFICITY_WEIGHT
+              : INLINE_STYLES_SPECIFICITY_WEIGHT
+          )
         }
       })
     }
@@ -232,45 +256,40 @@ export abstract class Element {
   protected matchesSelector(selector: string) {
     const { node } = this
 
+    // prefer the host DOM's native matcher when it exists
     if (typeof node.matches === 'function') {
       return node.matches(selector)
     }
 
-    const styleClasses = node.getAttribute?.('class')
-
-    if (!styleClasses || styleClasses === '') {
+    if (typeof node.getAttribute !== 'function') {
+      // not a real DOM element (e.g. the fake node used for masks):
+      // it has no attributes, so no selector can match it
       return false
     }
 
-    return styleClasses.split(' ').some(styleClass => `.${styleClass}` === selector)
+    return matchesCssSelector(node, selector)
   }
 
   addStylesFromStyleDefinition() {
-    const {
-      styles,
-      stylesSpecificity
-    } = this.document
+    const { styleRules } = this.document
 
-    for (const [selector, style] of styles) {
-      if (!selector.startsWith('@') && this.matchesSelector(selector)) {
-        const specificity = stylesSpecificity.get(selector)
+    for (const rule of styleRules) {
+      if (rule.selector.startsWith('@') || !this.matchesSelector(rule.selector)) {
+        continue
+      }
 
-        if (style) {
-          for (const [name, styleProp] of style) {
-            let existingSpecificity = this.stylesSpecificity.get(name)
+      for (const declaration of rule.declarations) {
+        const { name } = declaration
+        // rules are applied in document order, so on equal specificity the
+        // later declaration wins
+        const specificity = `${declaration.important
+          ? IMPORTANT_RULE_SPECIFICITY_TIER
+          : RULE_SPECIFICITY_TIER}${declaration.specificity}`
+        const existingSpecificity = this.stylesSpecificity.get(name) || ''
 
-            if (typeof existingSpecificity === 'undefined') {
-              existingSpecificity = '000'
-            }
-
-            if (specificity && specificity >= existingSpecificity) {
-              if (styleProp) {
-                this.styles.set(name, styleProp)
-              }
-
-              this.stylesSpecificity.set(name, specificity)
-            }
-          }
+        if (specificity >= existingSpecificity) {
+          this.styles.set(name, new Property(this.document, name, declaration.value))
+          this.stylesSpecificity.set(name, specificity)
         }
       }
     }

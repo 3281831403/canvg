@@ -1,4 +1,11 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
+import {
+  compressSpaces,
+  getSelectorSpecificityParts,
+  parseExternalUrl,
+  Specificity,
+  toSpecificityWeight
+} from '../util'
 import { Canvg } from '../Canvg'
 import { IScreenViewBoxConfig, Screen } from '../Screen'
 import { Property } from '../Property'
@@ -83,6 +90,50 @@ async function createImage(src: string, anonymousCrossOrigin = false) {
 
 const DEFAULT_EM_SIZE = 12
 
+/**
+ * A single declaration of a style sheet rule.
+ */
+export interface IStyleDeclaration {
+  /**
+   * Declaration order across all style sheets (used as tie-breaker).
+   */
+  order: number
+  /**
+   * Specificity weight of the selector.
+   */
+  specificity: string
+  /**
+   * Specificity parts of the selector.
+   */
+  specificityParts: Specificity
+  /**
+   * Whether the declaration is marked as `!important`.
+   */
+  important: boolean
+  /**
+   * Property name.
+   */
+  name: string
+  /**
+   * Property value.
+   */
+  value: string
+}
+
+/**
+ * A single style sheet rule.
+ */
+export interface IStyleRule {
+  /**
+   * Selector text.
+   */
+  selector: string
+  /**
+   * Declarations belonging to the rule.
+   */
+  declarations: IStyleDeclaration[]
+}
+
 export class Document {
   static readonly createCanvas = createCanvas
   static readonly createImage = createImage
@@ -94,11 +145,15 @@ export class Document {
   readonly createCanvas: CreateCanvas
   readonly createImage: CreateImage
   readonly definitions: Map<string, Element> = new Map()
-  readonly styles: Map<string, Map<string, Property>> = new Map()
-  readonly stylesSpecificity: Map<string, string> = new Map()
+  /**
+   * Style sheet rules in document order.
+   */
+  readonly styleRules: IStyleRule[] = []
   readonly images: ImageElement[] = []
   readonly fonts: SVGFontLoader[] = []
   private readonly emSizeStack: number[] = []
+  private readonly parsedStyleSheets: Set<HTMLElement> = new Set()
+  private styleDeclarationOrder = 0
   private uniqueId = 0
 
   constructor(
@@ -177,6 +232,10 @@ export class Document {
   }
 
   createDocumentElement(document: DOMDocument) {
+    // collect all style sheets up front, so the position of the `<style>`
+    // elements within the document doesn't matter
+    this.parseStyleSheets(document)
+
     const documentElement = this.createElement<SVGElement>(document.documentElement)
 
     documentElement.root = true
@@ -185,6 +244,136 @@ export class Document {
     this.documentElement = documentElement
 
     return documentElement
+  }
+
+  /**
+   * Parse every `<style>` element found under the given root node into
+   * {@link Document.styleRules}. Each style sheet is parsed only once.
+   * @param root - Root DOM node (usually the parsed document).
+   */
+  parseStyleSheets(root: unknown) {
+    if (!root || typeof (root as DOMDocument).getElementsByTagName !== 'function') {
+      return
+    }
+
+    const styleNodes = Array.from(
+      (root as DOMDocument).getElementsByTagName('style')
+    ) as HTMLElement[]
+
+    styleNodes.forEach((node) => {
+      if (this.parsedStyleSheets.has(node)) {
+        return
+      }
+
+      this.parsedStyleSheets.add(node)
+      this.parseStyleSheet(node)
+    })
+  }
+
+  private parseStyleSheet(node: HTMLElement) {
+    const css = compressSpaces(
+      Array.from(node.childNodes)
+        .map(_ => _.textContent)
+        .join('')
+        .replace(/(\/\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+\/)|(^[\s]*\/\/.*)/gm, '') // remove comments
+        .replace(/@import.*;/g, '') // remove imports
+    )
+    const cssDefs = css.split('}')
+
+    cssDefs.forEach((_) => {
+      const def = _.trim()
+
+      if (!def) {
+        return
+      }
+
+      const cssParts = def.split('{')
+      const cssClasses = cssParts[0].split(',')
+      const cssProps = (cssParts[1] || '').split(';')
+
+      cssClasses.forEach((_) => {
+        const cssClass = _.trim()
+
+        if (!cssClass) {
+          return
+        }
+
+        const declarations: IStyleDeclaration[] = []
+
+        cssProps.forEach((cssProp) => {
+          const prop = cssProp.indexOf(':')
+          const name = cssProp.substr(0, prop).trim()
+          let value = cssProp.substr(prop + 1, cssProp.length - prop).trim()
+
+          if (!name || !value) {
+            return
+          }
+
+          let important = false
+          const importantMatch = /!important\s*$/.exec(value)
+
+          if (importantMatch) {
+            important = true
+            value = value.slice(0, value.length - importantMatch[0].length).trim()
+          }
+
+          if (!value) {
+            return
+          }
+
+          const specificityParts = getSelectorSpecificityParts(cssClass)
+
+          declarations.push({
+            order: ++this.styleDeclarationOrder,
+            specificity: toSpecificityWeight(specificityParts),
+            specificityParts,
+            important,
+            name,
+            value
+          })
+        })
+
+        if (cssClass === '@font-face') {
+          this.loadFontFace(declarations)
+          return
+        }
+
+        if (declarations.length) {
+          this.styleRules.push({
+            selector: cssClass,
+            declarations
+          })
+        }
+      })
+    })
+  }
+
+  private loadFontFace(declarations: IStyleDeclaration[]) {
+    const props = new Map<string, Property>()
+
+    declarations.forEach((declaration) => {
+      props.set(declaration.name, new Property(this, declaration.name, declaration.value))
+    })
+
+    const fontFamilyProp = props.get('font-family')
+    const srcProp = props.get('src')
+
+    if (!fontFamilyProp || !srcProp) {
+      return
+    }
+
+    const fontFamily = fontFamilyProp.getString().replace(/"|'/g, '')
+    const srcs = srcProp.getString().split(',')
+
+    srcs.forEach((src) => {
+      if (src.indexOf('format("svg")') > 0) {
+        const url = parseExternalUrl(src)
+
+        if (url) {
+          void new SVGFontLoader(this).load(fontFamily, url)
+        }
+      }
+    })
   }
 
   createElement<T extends Element>(node: HTMLElement) {
