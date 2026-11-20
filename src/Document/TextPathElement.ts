@@ -56,6 +56,8 @@ export class TextPathElement extends TextElement {
   private letterSpacingCache: number[] = []
   private equidistantCache: IEquidistantCache
   private readonly measuresCache = new Map<string, number>([['', 0]])
+  private glyphInfoKey = ''
+  private measuresContextKey = ''
 
   constructor(
     document: Document,
@@ -311,6 +313,14 @@ export class TextPathElement extends TextElement {
   ) {
     const { measuresCache } = this
     const targetText = text || this.getText()
+    const contextKey = `${ctx.font}|${this.resolvedFontSize}`
+
+    if (contextKey !== this.measuresContextKey) {
+      // The font (or its size) changed, previously measured widths are stale.
+      measuresCache.clear()
+      measuresCache.set('', 0)
+      this.measuresContextKey = contextKey
+    }
 
     if (measuresCache.has(targetText)) {
       return measuresCache.get(targetText)
@@ -327,11 +337,15 @@ export class TextPathElement extends TextElement {
   // If some font will be loaded after this method call, <textPath> will not be rendered correctly.
   // You need to call this method manually to update glyphs cache.
   protected setTextData(ctx: RenderingContext2D) {
-    if (this.glyphInfo) {
+    const renderText = this.getText()
+    const glyphInfoKey = `${ctx.font}|${this.resolvedFontSize}|${renderText}`
+
+    if (this.glyphInfo && this.glyphInfoKey === glyphInfoKey) {
       return
     }
 
-    const renderText = this.getText()
+    this.glyphInfoKey = glyphInfoKey
+
     const chars = renderText.split('')
     const spacesNumber = renderText.split(' ').length - 1
     const dx = this.parent.getAttribute('dx').split().map(_ => _.getPixels('x'))

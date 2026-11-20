@@ -8,6 +8,15 @@ import { Property } from '../Property'
 import { Element } from './Element'
 
 export abstract class RenderedElement extends Element {
+  /**
+   * Font size (in pixels) resolved by the last {@link setContext} call. It is
+   * kept separate from the `font-size` style property because relative units
+   * (`em`, `%`, ...) must be resolved against the context the element is
+   * rendered in. The same definition can be rendered by several `<use>`
+   * elements with different font sizes, so the resolved value cannot be
+   * written back to the (shared) style property.
+   */
+  protected resolvedFontSize: number | undefined = undefined
   private modifiedEmSizeStack = false
 
   protected calculateOpacity() {
@@ -174,14 +183,21 @@ export abstract class RenderedElement extends Element {
       const fontStyleStyleProp = this.getStyle('font-style')
       const fontVariantStyleProp = this.getStyle('font-variant')
       const fontWeightStyleProp = this.getStyle('font-weight')
-      const fontSizeStyleProp = this.getStyle('font-size')
       const fontFamilyStyleProp = this.getStyle('font-family')
+      // Resolve the font size without overwriting the style property.
+      // Relative units (`em`, `%`, ...) must be resolved against the context
+      // the element is rendered in: the same definition can be reused by
+      // several `<use>` elements with different font sizes. Overwriting the
+      // property with the first resolved size would make every subsequent
+      // render use a stale size (and would also invalidate the measurement
+      // cache keyed by it).
+      let resolvedFontSize = this.getComputedFontSize()
       const font = new Font(
         fontStyleStyleProp.getString(),
         fontVariantStyleProp.getString(),
         fontWeightStyleProp.getString(),
-        fontSizeStyleProp.hasValue()
-          ? `${fontSizeStyleProp.getPixels(true)}px`
+        typeof resolvedFontSize === 'number' && !isNaN(resolvedFontSize)
+          ? `${resolvedFontSize}px`
           : '',
         fontFamilyStyleProp.getString(),
         Font.parse(
@@ -190,16 +206,30 @@ export abstract class RenderedElement extends Element {
         )
       )
 
+      if (typeof resolvedFontSize === 'number' && isNaN(resolvedFontSize)) {
+        resolvedFontSize = undefined
+      }
+
+      if (typeof resolvedFontSize === 'undefined') {
+        // The size comes from the `font` shorthand or from the context.
+        const inheritedFontSize = parseFloat(font.fontSize)
+
+        if (!isNaN(inheritedFontSize)) {
+          resolvedFontSize = inheritedFontSize
+        }
+      }
+
       fontStyleStyleProp.setValue(font.fontStyle)
       fontVariantStyleProp.setValue(font.fontVariant)
       fontWeightStyleProp.setValue(font.fontWeight)
-      fontSizeStyleProp.setValue(font.fontSize)
       fontFamilyStyleProp.setValue(font.fontFamily)
 
       ctx.font = font.toString()
 
-      if (fontSizeStyleProp.isPixels()) {
-        this.document.emSize = fontSizeStyleProp.getPixels()
+      this.resolvedFontSize = resolvedFontSize
+
+      if (typeof resolvedFontSize === 'number') {
+        this.document.emSize = resolvedFontSize
         this.modifiedEmSizeStack = true
       }
     }
@@ -218,5 +248,69 @@ export abstract class RenderedElement extends Element {
     if (this.modifiedEmSizeStack) {
       this.document.popEmSize()
     }
+  }
+
+  /**
+   * Resolves a `font-size` property to pixels. Relative units (`em`, `ex`,
+   * `%`) are resolved against the computed size of the parent instead of the
+   * mutable document `em` size, so nested measurement passes cannot resolve
+   * the same value twice.
+   * @param property - The `font-size` property to resolve.
+   * @returns The size in pixels.
+   */
+  private resolveFontSize(property: Property) {
+    const units = property.getUnits()
+    const isRelative = units === 'em' || units === 'ex' || units === '%'
+    const parentFontSize = this.parent instanceof RenderedElement
+      ? this.parent.getComputedFontSize()
+      : undefined
+
+    if (isRelative && typeof parentFontSize === 'number') {
+      const number = property.getNumber()
+
+      switch (units) {
+        case 'em':
+          return number * parentFontSize
+
+        case 'ex':
+          return number * parentFontSize / 2.0
+
+        case '%':
+          return number * parentFontSize
+
+        default:
+      }
+    }
+
+    return property.getPixels(true)
+  }
+
+  /**
+   * Returns the font size this element is rendered with, even before its
+   * {@link setContext} has been called. The element's own `font-size` is
+   * always resolved from the style chain (never cached), so changing it or
+   * rendering the same definition under another `<use>` with a different size
+   * is picked up immediately. An inherited size is taken from the ancestor
+   * that resolved it in the current render pass.
+   * @returns The computed font size in pixels, or `undefined`.
+   */
+  protected getComputedFontSize(): number | undefined {
+    const ownFontSizeProp = this.getStyle('font-size', false, true)
+
+    if (ownFontSizeProp.hasValue()) {
+      return this.resolveFontSize(ownFontSizeProp)
+    }
+
+    if (!this.getStyle('font-size').hasValue()
+      || !(this.parent instanceof RenderedElement)
+    ) {
+      return undefined
+    }
+
+    if (typeof this.parent.resolvedFontSize === 'number') {
+      return this.parent.resolvedFontSize
+    }
+
+    return this.parent.getComputedFontSize()
   }
 }
